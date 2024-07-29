@@ -128,16 +128,13 @@ class SurgVU_classify(ClassificationAlgorithm):
         ###  TODO: adapt the following part for YOUR submission: make prediction
         ###                                                                     ###
         
-        print(num_frames)
+        print('No. of frames: ', num_frames)
 
         # generate output json
         all_frames_predicted_outputs = []
         for i in range(num_frames):
             frame_dict = self.step_predict_json_sample()
             step_detection = self.dummy_step_prediction_model()
-
-            print(step_detection)
-
 
             frame_dict['frame_nr'] = i
             
@@ -146,7 +143,6 @@ class SurgVU_classify(ClassificationAlgorithm):
             all_frames_predicted_outputs.append(frame_dict)
 
         tools = all_frames_predicted_outputs
-
         return tools
 
 
