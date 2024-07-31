@@ -18,6 +18,7 @@ import json
 
 ####
 # Toggle the variable below to debug locally. The final container would need to have execute_in_docker=True
+# Fix fillna
 ####
 execute_in_docker = True
 
@@ -84,6 +85,10 @@ class SurgVU_classify(ClassificationAlgorithm):
                           "suturing",
                           "uterine_horn",
                           "other"]
+        # Comment for docker build
+        # Comment for docker built
+
+        print(self.step_list)
 
     def dummy_step_prediction_model(self):
         random_step_prediction = random.randint(0, len(self.step_list)-1)
@@ -106,6 +111,7 @@ class SurgVU_classify(ClassificationAlgorithm):
         return scored_candidates
 
     def save(self):
+        print('Saving prediction results to ' + str(self._output_file))
         with open(str(self._output_file), "w") as f:
             json.dump(self._case_results[0], f)
 
@@ -123,7 +129,8 @@ class SurgVU_classify(ClassificationAlgorithm):
         cap = cv2.VideoCapture(str(fname))
         num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        
+
+        ##
         ###                                                                     ###
         ###  TODO: adapt the following part for YOUR submission: make prediction
         ###                                                                     ###
@@ -142,8 +149,8 @@ class SurgVU_classify(ClassificationAlgorithm):
 
             all_frames_predicted_outputs.append(frame_dict)
 
-        tools = all_frames_predicted_outputs
-        return tools
+        steps = all_frames_predicted_outputs
+        return steps
 
 
 
