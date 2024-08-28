@@ -15,7 +15,28 @@ from evalutils.exceptions import ValidationError
 import random
 from typing import Dict
 import json
-from model.model import MViT
+#from model.mvit import MViT
+
+import traceback
+import numpy as np
+import torch
+from tqdm import tqdm
+
+import cv2
+import utils.checkpoint as cu
+import utils.logging as logging
+import utils.misc as misc
+from datasets import loader
+from datasets import cv2_transform
+from config.defaults import assert_and_infer_cfg
+from utils.misc import launch_job
+from utils.parser import load_config, parse_args
+from copy import copy
+import os
+
+from model.build import build_model
+
+
 
 ####
 # Toggle the variable below to debug locally. The final container would need to have execute_in_docker=True
@@ -86,7 +107,7 @@ class UniqueVideoValidator(DataFrameValidator):
 
 
 class SurgVU_classify(ClassificationAlgorithm):
-    def __init__(self):
+    def __init__(self, model, cfg):
         super().__init__(
             index_key='input_video',
             file_loaders={'input_video': VideoLoader()},
@@ -115,6 +136,17 @@ class SurgVU_classify(ClassificationAlgorithm):
                           "other"]
         # Comment for docker build
         # Comment for docker built
+        self.model = model
+        self.cfg = cfg
+        
+        
+        self._data_mean = cfg.DATA.MEAN
+        self._data_std = cfg.DATA.STD
+        self._use_bgr = cfg.ENDOVIS_DATASET.BGR
+
+        self._crop_size = cfg.DATA.TEST_CROP_SIZE
+        self._test_force_flip = cfg.ENDOVIS_DATASET.TEST_FORCE_FLIP
+        self.random_horizontal_flip = cfg.DATA.RANDOM_FLIP
 
         print(self.step_list)
 
@@ -143,6 +175,105 @@ class SurgVU_classify(ClassificationAlgorithm):
         with open(str(self._output_file), "w") as f:
             json.dump(self._case_results[0], f)
 
+    def _images_and_boxes_preprocessing_cv2(self, imgs):
+        """
+        This function performs preprocessing for the input images and
+        corresponding boxes for one clip with opencv as backend.
+
+        Args:
+            imgs (tensor): the images.
+            boxes (ndarray): the boxes for the current clip.
+
+        Returns:
+            imgs (tensor): list of preprocessed images.
+            boxes (ndarray): preprocessed boxes.
+        """
+
+        # `transform.py` is list of np.array. However, for AVA, we only have
+        # one np.array.
+        boxes = None
+
+        try:
+            imgs = [cv2_transform.scale(self._crop_size, img) for img in imgs]
+        except:
+            breakpoint()
+        
+        imgs, boxes = cv2_transform.spatial_shift_crop_list(
+            self._crop_size, imgs, 1, boxes=boxes
+        )
+
+        # Convert image to CHW keeping BGR order.
+        imgs = [cv2_transform.HWC2CHW(img) for img in imgs]
+
+        # Image [0, 255] -> [0, 1].
+        imgs = [img / 255.0 for img in imgs]
+
+        imgs = [
+            np.ascontiguousarray(
+                # img.reshape((3, self._crop_size, self._crop_size))
+                img.reshape((3, imgs[0].shape[1], imgs[0].shape[2]))
+            ).astype(np.float32)
+            for img in imgs
+        ]
+
+        # Normalize images by mean and std.
+        imgs = [
+            cv2_transform.color_normalization(
+                img,
+                np.array(self._data_mean, dtype=np.float32),
+                np.array(self._data_std, dtype=np.float32),
+            )
+            for img in imgs
+        ]
+
+        # Concat list of images to single ndarray.
+        imgs = np.concatenate(
+            [np.expand_dims(img, axis=1) for img in imgs], axis=1
+        )
+
+        if not self._use_bgr:
+            # Convert image format from BGR to RGB.
+            imgs = imgs[::-1, ...]
+
+        imgs = np.ascontiguousarray(imgs)
+        imgs = torch.from_numpy(imgs)
+        
+        return imgs
+
+    def _pack_pathway_output(self, frames):
+        """
+        Prepare output as a list of tensors. Each tensor corresponding to a
+        unique pathway.
+        Args:
+            frames (tensor): frames of images sampled from the video. The
+                dimension is `channel` x `num frames` x `height` x `width`.
+        Returns:
+            frame_list (list): list of tensors with the dimension of
+                `channel` x `num frames` x `height` x `width`.
+        """
+        if self.cfg.DATA.REVERSE_INPUT_CHANNEL:
+            frames = frames[[2, 1, 0], :, :, :]
+        if self.cfg.MODEL.ARCH in self.cfg.MODEL.SINGLE_PATHWAY_ARCH:
+            frame_list = [frames]
+        elif self.cfg.MODEL.ARCH in self.cfg.MODEL.MULTI_PATHWAY_ARCH:
+            fast_pathway = frames
+            # Perform temporal sampling from the fast pathway.
+            slow_pathway = torch.index_select(
+                frames,
+                1,
+                torch.linspace(
+                    0, frames.shape[1] - 1, frames.shape[1] // self.cfg.action_recognition.ALPHA
+                ).long(),
+            )
+            frame_list = [slow_pathway, fast_pathway]
+        else:
+            raise NotImplementedError(
+                "Model arch {} is not in {}".format(
+                    self.cfg.MODEL.ARCH,
+                    self.cfg.MODEL.SINGLE_PATHWAY_ARCH + self.cfg.MODEL.MULTI_PATHWAY_ARCH,
+                )
+            )
+        return frame_list
 
     def predict(self, fname) -> Dict:
         """
@@ -152,7 +283,7 @@ class SurgVU_classify(ClassificationAlgorithm):
         Output:
         tools -> list of prediction dictionaries (per frame) in the correct format as described in documentation 
         """
-        
+ 
         print('Video file to be loaded: ' + str(fname))
         cap = cv2.VideoCapture(str(fname))
         num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -165,7 +296,7 @@ class SurgVU_classify(ClassificationAlgorithm):
         window_size = 16
         sample_rate = 4
 
-        for i in frame_indices:
+        for i in tqdm(frame_indices, desc=f'Processing video {fname}...'):
             frame_idx = 0
             window_frame_indices = get_sequence(i, (window_size * sample_rate) // 2, sample_rate, num_frames, window_size * sample_rate)
 
@@ -180,9 +311,17 @@ class SurgVU_classify(ClassificationAlgorithm):
 
                 frames.append(frame)
 
-            model = MViT()
+            frames = self._images_and_boxes_preprocessing_cv2(frames)
+            frames = self._pack_pathway_output(frames)
 
-                #cv2.imwrite(f'/home/srodriguezr2/endovis/challenges2024/surgvu2024-category2-submission/visuals/{i}_{index}.png', frame)
+            frames[0] = frames[0].unsqueeze(0) #Agregamos la dimension del batch a nuestros datos
+
+            print(frames[0].shape)
+
+            #mvit_output = self.model(frames)
+
+
+
 
         ##
         ###                                                                     ###
@@ -206,7 +345,41 @@ class SurgVU_classify(ClassificationAlgorithm):
         steps = all_frames_predicted_outputs
         return steps
 
+def test(cfg):
+    """
+    Perform testing on the pretrained video model.
+    Args:
+        cfg (CfgNode): configs. Details can be found in
+            config/defaults.py
+    """
 
+    # Build the video model and print model statistics.
+    model = build_model(cfg)
+    print(model)
+
+    # Load checkpoint #TODO: Revisar el script de checkpoint. Asegurarnos que el cfg tiene la ruta indicada de nuestro modelo final
+    cu.load_test_checkpoint(cfg, model) 
+
+    surgvu_pipeline = SurgVU_classify(model, cfg)
+
+    # # Perform test on the entire dataset.
+    with torch.no_grad():
+        surgvu_pipeline.process()
+
+def main():
+    """
+    Main function to spawn the train and test process.
+    """
+    args = parse_args()
+    cfg = load_config(args)
+    cfg = assert_and_infer_cfg(cfg)
+
+    # Perform multi-clip testing.
+    if cfg.TEST.ENABLE:
+        launch_job(cfg=cfg, init_method=args.init_method, func=test)
 
 if __name__ == "__main__":
-    SurgVU_classify().process()
+    main()
+
+# if __name__ == "__main__":
+#     SurgVU_classify().process()

@@ -24,12 +24,17 @@ from .utils import (
 )
 
 from . import head_helper, stem_helper
-from .build import MODEL_REGISTRY
+#from .build import MODEL_REGISTRY
 
 try:
     from fairscale.nn.checkpoint import checkpoint_wrapper
 except ImportError:
     checkpoint_wrapper = None
+
+_POOL1 = {
+    "mvit": [[2, 1, 1]], 
+    'MMViT': [[2, 1, 1]],
+}
 
 class MViT(nn.Module):
     """
