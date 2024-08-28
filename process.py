@@ -20,7 +20,7 @@ import json
 # Toggle the variable below to debug locally. The final container would need to have execute_in_docker=True
 # Fix fillna
 ####
-execute_in_docker = True
+execute_in_docker = False
 
 class VideoLoader():
     def load(self, *, fname):
@@ -129,6 +129,30 @@ class SurgVU_classify(ClassificationAlgorithm):
         cap = cv2.VideoCapture(str(fname))
         num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+        if num_frames == 0:
+            return {}
+
+        frame_indices = [i for i in range(num_frames)]
+
+        window_size = 16
+        sample_rate = 4
+
+        for i in frame_indices:
+            frame_idx = 0
+            window_frame_indices = get_sequence(i, (window_size * sample_rate) // 2, sample_rate, num_frames, window_size * sample_rate)
+
+            frames = []
+
+            for i, index in enumerate(window_frame_indices):
+                # Set the current position of the video to the desired frame index
+                cap.set(cv2.CAP_PROP_POS_FRAMES, index)
+
+                # Read the frame at the specified index
+                ret, frame = cap.read()
+
+                frames.append(frame)
+
+                #cv2.imwrite(f'/home/srodriguezr2/endovis/challenges2024/surgvu2024-category2-submission/visuals/{i}_{index}.png', frame)
 
         ##
         ###                                                                     ###
