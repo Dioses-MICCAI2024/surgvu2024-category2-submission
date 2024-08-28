@@ -15,6 +15,7 @@ from evalutils.exceptions import ValidationError
 import random
 from typing import Dict
 import json
+from model.model import MViT
 
 ####
 # Toggle the variable below to debug locally. The final container would need to have execute_in_docker=True
@@ -178,6 +179,8 @@ class SurgVU_classify(ClassificationAlgorithm):
                 ret, frame = cap.read()
 
                 frames.append(frame)
+
+            model = MViT()
 
                 #cv2.imwrite(f'/home/srodriguezr2/endovis/challenges2024/surgvu2024-category2-submission/visuals/{i}_{index}.png', frame)
 
