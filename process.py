@@ -22,6 +22,33 @@ import json
 ####
 execute_in_docker = False
 
+def get_sequence(center_idx, half_len, sample_rate, num_frames, length):
+    """
+    Sample frames among the corresponding clip.
+
+    Args:
+        center_idx (int): center frame idx for current clip
+        half_len (int): half of the clip length
+        sample_rate (int): sampling rate for sampling frames inside of the clip
+        num_frames (int): number of expected sampled frames
+
+    Returns:
+        seq (list): list of indexes of sampled frames in this clip.
+    """
+
+    if length % 2 == 0:
+        seq = list(range(center_idx - half_len, center_idx + half_len, sample_rate))
+    else:
+        seq = list(range(center_idx - half_len, center_idx + half_len + 1, sample_rate))
+    
+    for seq_idx in range(len(seq)):
+        if seq[seq_idx] < 0:
+            seq[seq_idx] = 0
+        elif seq[seq_idx] >= num_frames:
+            seq[seq_idx] = num_frames - 1
+
+    return seq
+
 class VideoLoader():
     def load(self, *, fname):
         path = Path(fname)
