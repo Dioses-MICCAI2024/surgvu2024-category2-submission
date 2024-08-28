@@ -73,7 +73,7 @@ SOLVER:
   MOMENTUM: 0.9
   WEIGHT_DECAY: 1e-4
   ZERO_WD_1D_PARAM: True
-  WARMUP_START_LR:  0.000125
+  WARMUP_START_LR: 0.000125
   OPTIMIZING_METHOD: sgd
 MODEL:
   ARCH: mvit
@@ -81,20 +81,16 @@ MODEL:
   LOSS_FUNC: soft_cross_entropy
   DROPOUT_RATE: 0.5
 TASKS:
-  TASKS:  ["phases"]
+  TASKS: ["phases"]
   NUM_CLASSES: [8]
   LOSS_FUNC: ["cross_entropy"]
-  HEAD_ACT:  ["softmax"]
-  LOSS_WEIGHTS:  [1.0]  
-  METRICS: ["f1"]  
+  HEAD_ACT: ["softmax"]
+  LOSS_WEIGHTS: [1.0]
+  METRICS: ["f1"]
 DATA_LOADER:
   NUM_WORKERS: 5
   PIN_MEMORY: True
 FEATURES:
-  ENABLE: False
-TEST:
-  ENABLE: True
-TRAIN:
   ENABLE: False
 NUM_GPUS: 1
 NUM_SHARDS: 1
