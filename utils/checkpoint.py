@@ -552,6 +552,7 @@ def load_test_checkpoint(cfg, model):
     Loading checkpoint logic for testing.
     """
     # Load a checkpoint to test if applicable.
+    breakpoint()
     if cfg.TEST.CHECKPOINT_FILE_PATH != "":
         # If no checkpoint found in MODEL_VIS.CHECKPOINT_FILE_PATH or in the current
         # checkpoint folder, try to load checkpoint from

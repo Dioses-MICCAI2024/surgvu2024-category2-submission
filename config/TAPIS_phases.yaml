@@ -9,6 +9,7 @@ TEST:
   ENABLE: True
   DATASET: surgvu
   BATCH_SIZE: 24
+  CHECKPOINT_FILE_PATH: "/home/naparicioc/ENDOVIS/TAPIS_Challenge/TAPIS/outputs/surgvu/PHASES/arch_TAPIS-frames_16-sr_4-online_False/fold1/checkpoint_best_phases.pyth"
 DATA:
   NUM_FRAMES: 16
   SAMPLING_RATE: 120

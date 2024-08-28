@@ -44,6 +44,19 @@ from model.build import build_model
 ####
 execute_in_docker = False
 
+def count_valid_frames(video_path):
+    cap = cv2.VideoCapture(video_path)
+    valid_frame_count = 0
+
+    while True:
+        ret, frame = cap.read()  # Read the next frame
+        if not ret:
+            break  # Exit the loop if the frame is not accessible (e.g., end of video or corrupted frame)
+        valid_frame_count += 1  # Increment the counter for valid frames
+
+    cap.release()  # Release the video capture object
+    return valid_frame_count
+
 def get_sequence(center_idx, half_len, sample_rate, num_frames, length):
     """
     Sample frames among the corresponding clip.
@@ -70,6 +83,49 @@ def get_sequence(center_idx, half_len, sample_rate, num_frames, length):
             seq[seq_idx] = num_frames - 1
 
     return seq
+
+def blur_frame(
+    frame: np.ndarray,
+    blurness: int = 51,
+    side_margin: int = 192,
+    bottom_margin: int = 33,
+    ):
+
+    img = frame.copy()
+    blurred_img = cv2.GaussianBlur(img, (blurness, blurness), 0)
+    mask = np.zeros_like(img)
+    mask[:-bottom_margin, :, :] = 1
+    img = np.where(mask, img, blurred_img)
+    
+    return img
+
+def map_probabilities(model_output: dict, probabilities: list):
+    """
+    Reorder the probabilities to match the expected order of the categories.
+    """
+
+    # Defining the mapping from category id to expected index
+    id_to_expected_index = {
+        6: 0,  # 'Range of Motion' -> 'range_of_motion'
+        4: 1,  # 'Rectal Artery/Vein' -> 'rectal_artery_vein'
+        7: 2,  # 'Retraction and Collision Avoidance' -> 'retraction_collision_avoidance'
+        5: 3,  # 'Skills Application' -> 'skills_application'
+        3: 4,  # 'Suspensory Ligaments' -> 'suspensory_ligaments'
+        1: 5,  # 'Suturing' -> 'suturing'
+        2: 6,  # 'Uterine Horn' -> 'uterine_horn'
+        0: 7   # 'Other/Unannotated' -> 'other'
+    }
+
+    # Crear una lista vacía para las probabilidades reorganizadas
+    reordered_probs = [0] * len(probabilities)
+
+    # Asignar las probabilidades a la posición correspondiente en reordered_probs
+    for item in model_output:
+        category_id = item['id']
+        expected_index = id_to_expected_index[category_id]
+        reordered_probs[expected_index] = probabilities[category_id]
+
+    return reordered_probs
 
 class VideoLoader():
     def load(self, *, fname):
@@ -193,10 +249,10 @@ class SurgVU_classify(ClassificationAlgorithm):
         # one np.array.
         boxes = None
 
-        try:
-            imgs = [cv2_transform.scale(self._crop_size, img) for img in imgs]
-        except:
-            breakpoint()
+        # try:
+        imgs = [cv2_transform.scale(self._crop_size, img) for img in imgs]
+        # except:
+            # breakpoint()
         
         imgs, boxes = cv2_transform.spatial_shift_crop_list(
             self._crop_size, imgs, 1, boxes=boxes
@@ -284,9 +340,20 @@ class SurgVU_classify(ClassificationAlgorithm):
         tools -> list of prediction dictionaries (per frame) in the correct format as described in documentation 
         """
  
+        model_output = [{'id': 0, 'name': 'Other/Unannotated', 'supercategory': 'phase'}, 
+                {'id': 1, 'name': 'Suturing', 'supercategory': 'phase'}, 
+                {'id': 2, 'name': 'Uterine Horn', 'supercategory': 'phase'}, 
+                {'id': 3, 'name': 'Suspensory Ligaments', 'supercategory': 'phase'}, 
+                {'id': 4, 'name': 'Rectal Artery/Vein', 'supercategory': 'phase'}, 
+                {'id': 5, 'name': 'Skills Application', 'supercategory': 'phase'}, 
+                {'id': 6, 'name': 'Range of Motion', 'supercategory': 'phase'}, 
+                {'id': 7, 'name': 'Retraction and Collision Avoidance', 'supercategory': 'phase'}]
+        
         print('Video file to be loaded: ' + str(fname))
         cap = cv2.VideoCapture(str(fname))
-        num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        num_frames = count_valid_frames(fname)
 
         if num_frames == 0:
             return {}
@@ -296,18 +363,22 @@ class SurgVU_classify(ClassificationAlgorithm):
         window_size = 16
         sample_rate = 4
 
-        for i in tqdm(frame_indices, desc=f'Processing video {fname}...'):
+        predictions = []
+
+        for frame_num in tqdm(frame_indices, desc=f'Processing video {fname}...'):
             frame_idx = 0
-            window_frame_indices = get_sequence(i, (window_size * sample_rate) // 2, sample_rate, num_frames, window_size * sample_rate)
+            window_frame_indices = get_sequence(frame_num, (window_size * sample_rate) // 2, sample_rate, num_frames, window_size * sample_rate)
 
             frames = []
 
-            for i, index in enumerate(window_frame_indices):
+            for index in window_frame_indices:
                 # Set the current position of the video to the desired frame index
                 cap.set(cv2.CAP_PROP_POS_FRAMES, index)
 
                 # Read the frame at the specified index
                 ret, frame = cap.read()
+
+                frame = blur_frame(frame)
 
                 frames.append(frame)
 
@@ -318,32 +389,16 @@ class SurgVU_classify(ClassificationAlgorithm):
 
             print(frames[0].shape)
 
-            #mvit_output = self.model(frames)
-
-
-
-
-        ##
-        ###                                                                     ###
-        ###  TODO: adapt the following part for YOUR submission: make prediction
-        ###                                                                     ###
+            # Load checkpoint
+            mvit_output = self.model(frames)
+            mapped_outputs = map_probabilities(model_output, mvit_output["phases"][0].tolist())
+            
+            # Append the argmax of the list
+            predictions.append({"frame_nr": frame_num, "surgical_step": mapped_outputs.index(max(mapped_outputs))})
         
         print('No. of frames: ', num_frames)
 
-        # generate output json
-        all_frames_predicted_outputs = []
-        for i in range(num_frames):
-            frame_dict = self.step_predict_json_sample()
-            step_detection = self.dummy_step_prediction_model()
-
-            frame_dict['frame_nr'] = i
-            
-            frame_dict["surgical_step"] = step_detection
-
-            all_frames_predicted_outputs.append(frame_dict)
-
-        steps = all_frames_predicted_outputs
-        return steps
+        return predictions
 
 def test(cfg):
     """

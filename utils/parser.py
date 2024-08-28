@@ -72,6 +72,7 @@ def load_config(args):
             `init_method`, `cfg_file`, and `opts`.
     """
     # Setup cfg.
+    breakpoint()
     cfg = get_cfg()
     # Load config from cfg.
     if args.cfg_file is not None:
