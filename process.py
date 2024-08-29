@@ -1,3 +1,8 @@
+import torch
+
+print(torch.cuda.is_available())
+breakpoint()
+
 import SimpleITK
 import numpy as np
 import cv2
@@ -21,6 +26,8 @@ import traceback
 import numpy as np
 import torch
 from tqdm import tqdm
+import sys
+import os
 
 import cv2
 import utils.checkpoint as cu
@@ -42,7 +49,7 @@ from model.build import build_model
 # Toggle the variable below to debug locally. The final container would need to have execute_in_docker=True
 # Fix fillna
 ####
-execute_in_docker = False
+execute_in_docker = True
 
 def count_valid_frames(video_path):
     cap = cv2.VideoCapture(video_path)
@@ -127,6 +134,18 @@ def map_probabilities(model_output: dict, probabilities: list):
 
     return reordered_probs
 
+# class VideoLoader():
+#     def load(self, *, fname):
+#         path = Path(fname)
+#         print(path)
+#         if not path.is_file():
+#             raise IOError(
+#                 f"Could not load {fname} using {self.__class__.__qualname__}."
+#             )
+#             #cap = cv2.VideoCapture(str(fname))
+#         #return [{"video": cap, "path": fname}]
+#         return [{"path": fname}]
+
 class VideoLoader():
     def load(self, *, fname):
         path = Path(fname)
@@ -135,8 +154,10 @@ class VideoLoader():
             raise IOError(
                 f"Could not load {fname} using {self.__class__.__qualname__}."
             )
-            #cap = cv2.VideoCapture(str(fname))
-        #return [{"video": cap, "path": fname}]
+        # Check if the file is an mp4 file
+        if path.suffix != '.mp4':
+            print(f"Skipping non-mp4 file: {fname}")
+            return []
         return [{"path": fname}]
 
 # only path valid
@@ -206,21 +227,29 @@ class SurgVU_classify(ClassificationAlgorithm):
 
         print(self.step_list)
 
-    def dummy_step_prediction_model(self):
-        random_step_prediction = random.randint(0, len(self.step_list)-1)
+    # def process_case(self, *, idx, case):
 
-        return random_step_prediction
-    
-    def step_predict_json_sample(self):
-        single_output_dict = {"frame_nr": 1, "surgical_step": None}
-        return single_output_dict
+    #     # Input video would return the collection of all frames (cap object)
+    #     input_video_file_path = case #VideoLoader.load(case)
+
+    #     # Detect and score candidates
+    #     scored_candidates = self.predict(case.path) #video file > load evalutils.py
+
+    #     # return
+    #     # Write resulting candidates to result.json for this case
+    #     return scored_candidates
 
     def process_case(self, *, idx, case):
+        # Check if the file is an mp4 file
+        if case.path.suffix != '.mp4':
+            print(f"Skipping non-mp4 file: {case.path}")
+            return []
 
         # Input video would return the collection of all frames (cap object)
-        input_video_file_path = case #VideoLoader.load(case)
+        input_video_file_path = case  # VideoLoader.load(case)
+
         # Detect and score candidates
-        scored_candidates = self.predict(case.path) #video file > load evalutils.py
+        scored_candidates = self.predict(case.path)  # video file > load evalutils.py
 
         # return
         # Write resulting candidates to result.json for this case
@@ -229,7 +258,7 @@ class SurgVU_classify(ClassificationAlgorithm):
     def save(self):
         print('Saving prediction results to ' + str(self._output_file))
         with open(str(self._output_file), "w") as f:
-            json.dump(self._case_results[0], f)
+            json.dump(self._case_results, f)
 
     def _images_and_boxes_preprocessing_cv2(self, imgs):
         """
@@ -355,8 +384,8 @@ class SurgVU_classify(ClassificationAlgorithm):
         # num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         num_frames = count_valid_frames(fname)
 
-        if num_frames == 0:
-            return {}
+        #if num_frames == 0:
+            
 
         frame_indices = [i for i in range(num_frames)]
 
@@ -387,8 +416,6 @@ class SurgVU_classify(ClassificationAlgorithm):
 
             frames[0] = frames[0].unsqueeze(0) #Agregamos la dimension del batch a nuestros datos
 
-            print(frames[0].shape)
-
             # Load checkpoint
             mvit_output = self.model(frames)
             mapped_outputs = map_probabilities(model_output, mvit_output["phases"][0].tolist())
@@ -397,7 +424,7 @@ class SurgVU_classify(ClassificationAlgorithm):
             predictions.append({"frame_nr": frame_num, "surgical_step": mapped_outputs.index(max(mapped_outputs))})
         
         print('No. of frames: ', num_frames)
-
+        #breakpoint()
         return predictions
 
 def test(cfg):

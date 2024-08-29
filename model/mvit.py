@@ -347,7 +347,11 @@ class MViT(nn.Module):
     def forward(self, x, features=None, boxes_mask=None, image_names=None):
         # breakpoint()
         out = {}
-        x = x[0].cuda()
+        if torch.cuda.is_available():
+            x = x[0].cuda()
+        else:
+            x = x[0]  # Keep x on CPU if CUDA is not available
+        
         x = self.patch_embed(x)
 
         T = self.cfg.DATA.NUM_FRAMES // self.patch_stride[0]
