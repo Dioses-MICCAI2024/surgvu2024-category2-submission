@@ -400,3 +400,273 @@ class MViT(nn.Module):
                 out[f'{task}_presence'] = getattr(self, "extra_heads_{}_presence".format(task))(x, features, boxes_mask)
                 
         return out
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=1000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=0.1)
+        
+        # Compute positional encodings
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
+        
+    def forward(self, x):
+        x = x + self.pe[:, :x.size(1)]
+        return self.dropout(x)
+
+class PoswiseFeedForwardNet(nn.Module):
+    def __init__(self, d_model, d_ff):
+        super(PoswiseFeedForwardNet, self).__init__()
+        self.fc = nn.Sequential(nn.Linear(d_model, d_ff, bias=False),
+            nn.ReLU(),
+            nn.Linear(d_ff, d_model, bias=False)
+        )
+        self.d_model = d_model
+
+    def forward(self, inputs):
+        '''
+        inputs: [batch_size, seq_len, d_model]
+        '''
+        residual = inputs
+        output = self.fc(inputs)
+        return nn.LayerNorm(self.d_model).cuda()(output + residual)  # [batch_size, seq_len, d_model]
+
+def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
+    batch_size, seq_len, n_kv_heads, head_dim = x.shape
+    if n_rep == 1:
+        return x
+    return (
+        x[:, :, :, None, :]
+        .expand(batch_size, seq_len, n_kv_heads, n_rep, head_dim)
+        .reshape(batch_size, seq_len, n_kv_heads * n_rep, head_dim)
+    )
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, dim, n_heads, max_seq_len=6000, max_batch_size=1):
+        super().__init__()
+
+        self.n_kv_heads = n_heads
+        self.n_heads_q = n_heads
+        self.n_rep = self.n_heads_q // self.n_kv_heads
+
+        self.head_dim = dim // n_heads
+
+        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
+
+    def forward(
+        self,
+        x_q,
+        x_k,
+        x_v,
+        mask,
+    ):
+        batch_size, seq_len, _ = x_q.shape  # (B, 1, Dim)
+
+        xq = self.wq(x_q)
+        xk = self.wk(x_k)
+        xv = self.wv(x_v)
+
+        xq = xq.view(batch_size, seq_len, self.n_heads_q, self.head_dim)
+        xk = xk.view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+        xv = xv.view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+
+        # Repeat k, v for matching q dimensions
+        xk = repeat_kv(xk, self.n_rep)
+        xv = repeat_kv(xv, self.n_rep)
+
+        xq = xq.transpose(1, 2)
+        xk = xk.transpose(1, 2)
+        xv = xv.transpose(1, 2)
+
+        scores = torch.matmul(xq, xk.transpose(-2, -1)) / math.sqrt(self.head_dim)
+
+        if mask is not None:
+            scores += mask
+
+        scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+
+        output = torch.matmul(scores, xv)
+        output = (output.transpose(1, 2).contiguous().view(batch_size, seq_len, -1))
+        output = self.wo(output)
+
+        return output, scores # (B, 1, Dim) -> (B, 1, Dim)
+
+class EncoderLayer(nn.Module):
+    def __init__(self, d_model, n_heads):
+        super(EncoderLayer, self).__init__()
+        self.enc_self_attn = MultiHeadAttention(d_model, n_heads)
+        self.pos_ffn = PoswiseFeedForwardNet(d_model, 256*4)
+        
+        # Layer Normalization
+        self.layernorm1 = nn.LayerNorm(d_model)
+        self.layernorm2 = nn.LayerNorm(d_model)
+        
+    def forward(self, enc_inputs, mask=None):
+        ''' enc_inputs: [batch_size, src_len, d_model] '''
+        
+        # Self-Attention with Residual Connection
+        attn_outputs, attn_scores = self.enc_self_attn(enc_inputs, enc_inputs, enc_inputs, mask)
+        attn_outputs = self.layernorm1(attn_outputs + enc_inputs)  # Residual Connection
+        
+        # Position-wise Feed-Forward with Residual Connection
+        ffn_outputs = self.pos_ffn(attn_outputs)
+        ffn_outputs = self.layernorm2(ffn_outputs + attn_outputs)  # Residual Connection
+        
+        # enc_outputs: [batch_size, src_len, d_model], attn: [batch_size, n_heads, src_len, src_len]
+        return ffn_outputs, attn_scores
+
+class Encoder(nn.Module):
+    def __init__(self, d_model, n_layers, n_heads):
+        super(Encoder, self).__init__()
+        self.layers = nn.ModuleList([EncoderLayer(d_model, n_heads) for _ in range(n_layers)])
+        self.d_model = d_model
+        self.n_heads = n_heads
+
+    def make_zero_padding(self, x, current_length):
+        target_length = 6000
+        padding_length = target_length - current_length
+        padding_idx = target_length - padding_length
+        x = F.pad(x, (0, 0, 0, padding_length), "constant", 0)
+        return x, padding_idx
+
+    def forward(self, enc_inputs, mask=None, original_lenght=None):
+        ''' enc_inputs: [batch_size, src_len, d_model] '''
+        enc_outputs = enc_inputs
+        enc_self_attns = []
+        for layer in self.layers:
+            enc_outputs, attn = layer(enc_outputs, mask)
+            enc_self_attns.append(attn)
+        return enc_outputs, enc_self_attns
+
+class DecoderLayer(nn.Module):
+    def __init__(self, d_model, n_heads):
+        super(DecoderLayer, self).__init__()
+        self.self_attn = MultiHeadAttention(d_model, n_heads)
+        self.dec_enc_attn = MultiHeadAttention(d_model, n_heads)
+        self.pos_ffn = PoswiseFeedForwardNet(d_model, 256*4)
+
+        # Layer Normalization
+        self.layernorm1 = nn.LayerNorm(d_model)
+        self.layernorm2 = nn.LayerNorm(d_model)
+        self.layernorm3 = nn.LayerNorm(d_model)
+
+    def forward(self, dec_inputs, enc_outputs, mask=None):
+        ''' dec_inputs: [batch_size, tgt_len, d_model]
+            enc_outputs: [batch_size, src_len, d_model]
+            dec_self_attn_mask: [batch_size, tgt_len, tgt_len]
+            dec_enc_attn_mask: [batch_size, tgt_len, src_len]
+        '''
+        # Masked Self-Attention with Residual Connection
+        dec_outputs = dec_inputs
+        
+        dec_outputs, _ = self.self_attn(dec_inputs, dec_inputs, dec_inputs, mask=mask)
+        dec_outputs = self.layernorm1(dec_outputs + dec_inputs)  # Residual Connection
+
+        # Encoder-Decoder Attention with Residual Connection
+        dec_outputs1, dec_enc_attn = self.dec_enc_attn(dec_outputs, enc_outputs, enc_outputs, mask=mask)
+        dec_outputs = self.layernorm2(dec_outputs + dec_outputs1)  # Residual Connection
+
+        # Position-wise Feed-Forward with Residual Connection
+        dec_outputs2 = self.pos_ffn(dec_outputs)
+        dec_outputs = self.layernorm3(dec_outputs + dec_outputs2)  # Residual Connection
+
+        # [batch_size, tgt_len, d_model], [batch_size, h_heads, tgt_len, src_len]
+        return dec_outputs, dec_enc_attn
+
+class Decoder(nn.Module):
+    def __init__(self, d_model, n_layers, n_heads):
+        super(Decoder, self).__init__()
+        self.layers = nn.ModuleList([DecoderLayer(d_model, n_heads) for _ in range(n_layers)])
+        self.d_model = d_model
+        self.n_heads = n_heads
+
+    def forward(self, dec_inputs, enc_outputs, mask=None):
+        ''' dec_inputs: [batch_size, tgt_len, d_model]
+            enc_intpus: [batch_size, src_len, d_model]
+            enc_outputs: [batsh_size, src_len, d_model]
+        '''
+        dec_outputs = dec_inputs
+
+        dec_enc_attns = []
+        for layer in self.layers:
+            # dec_outputs: [batch_size, tgt_len, d_model], dec_self_attn: [batch_size, n_heads, tgt_len, tgt_len], dec_enc_attn: [batch_size, h_heads, tgt_len, src_len]
+            dec_outputs, dec_enc_attn = layer(dec_outputs, enc_outputs, mask=mask)
+            dec_enc_attns.append(dec_enc_attn)
+        return dec_outputs, dec_enc_attns
+
+class VideoTransformerPerFrame(nn.Module):
+    def __init__(self, cfg, classifier=True, max_len=15000):
+        super(VideoTransformerPerFrame, self).__init__()
+        self.tasks = cfg.TASKS.TASKS
+        self.num_classes = cfg.TASKS.NUM_CLASSES
+        self.act_fun = cfg.TASKS.HEAD_ACT
+        self.seq_len = cfg.TEMPORAL_MODULE.NUM_FRAMES
+
+        self.positional_encoding = PositionalEncoding(cfg.TEMPORAL_MODULE.STEPFORMER_D_MODEL, max_len)
+        
+        self.embedding = nn.Linear(cfg.TEMPORAL_MODULE.STEPFORMER_INPUT_DIM, cfg.TEMPORAL_MODULE.STEPFORMER_D_MODEL)
+
+        self.encoder = Encoder(cfg.TEMPORAL_MODULE.STEPFORMER_D_MODEL, cfg.TEMPORAL_MODULE.STEPFORMER_NUM_LAYERS, cfg.TEMPORAL_MODULE.STEPFORMER_NUM_HEADS)
+        self.decoder = Decoder(cfg.TEMPORAL_MODULE.STEPFORMER_D_MODEL, cfg.TEMPORAL_MODULE.STEPFORMER_NUM_LAYERS, cfg.TEMPORAL_MODULE.STEPFORMER_NUM_HEADS)
+    
+        self.classifier_encoder = nn.Linear(cfg.TEMPORAL_MODULE.STEPFORMER_D_MODEL, cfg.TEMPORAL_MODULE.STEPFORMER_D_MODEL)
+
+        self.classifier = classifier
+        
+        if classifier:       
+            for idx, task in enumerate(self.tasks):
+                if task in ['actions', 'instruments']:
+                    extra_head = head_helper.ClassificationRoIHead(
+                            cfg, 
+                            self.num_classes[idx],
+                            dropout_rate=cfg.MODEL.DROPOUT_RATE,
+                            act_func=self.act_fun[idx],
+                            )
+                
+                else:
+                    extra_head = head_helper.ClassificationBasicHead(
+                            cfg,
+                            cfg.TEMPORAL_MODULE.STEPFORMER_D_MODEL,
+                            self.num_classes[idx],
+                            dropout_rate=cfg.MODEL.DROPOUT_RATE,
+                            act_func=self.act_fun[idx],
+                            )
+
+                self.add_module("extra_heads_{}".format(task), extra_head)
+        
+    def forward(self, x, features=None, boxes_mask=None, sequence_mask=None):
+        out = {}
+
+        x = x.cuda().float()
+        
+        x = self.embedding(x)
+        x = self.positional_encoding(x)
+
+        x, _ = self.encoder(x)
+        x_tgt = self.classifier_encoder(x)
+
+        x, _ = self.decoder(x, x_tgt)
+
+        mid_frame = x.shape[1] // 2
+
+        x = x[:, mid_frame] #-1 As is Online Setup. We are taking the current frame
+
+        if self.classifier:
+            for task in self.tasks:
+                extra_head = getattr(self, "extra_heads_{}".format(task))
+                if task == 'instruments' or task == 'actions':
+                    sequence_mask = sequence_mask.reshape((sequence_mask.shape[0], sequence_mask.shape[1]//self.seq_len , self.seq_len))
+                    out[task] = extra_head(x, features, boxes_mask, sequence_mask)
+                else:
+                    out[task] = extra_head(x)
+
+        return out
+

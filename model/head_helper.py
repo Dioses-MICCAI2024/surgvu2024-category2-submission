@@ -341,7 +341,7 @@ class TransformerBasicHead(nn.Module):
             x = x[:,1:].mean(1)
         else:
             x = x.mean(1)
-        breakpoint()
+
         if features:
             return x
 
@@ -732,6 +732,7 @@ class ClassificationBasicHead(nn.Module):
 
     def __init__(
         self,
+        cfg,
         dim_in,
         num_classes,
         dropout_rate=0.0,
@@ -769,8 +770,8 @@ class ClassificationBasicHead(nn.Module):
             x = self.dropout(x)
         x = self.projection(x)
 
-        if self.act_func == "sigmoid" or not self.training:
-            x = self.act(x)
+        x = self.act(x)
+        
         return x
 
 

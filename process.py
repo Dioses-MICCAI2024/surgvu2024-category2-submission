@@ -38,8 +38,7 @@ from copy import copy
 import os
 
 from model.build import build_model
-
-
+from model.mvit import VideoTransformerPerFrame
 
 ####
 # Toggle the variable below to debug locally. The final container would need to have execute_in_docker=True
@@ -209,9 +208,13 @@ class SurgVU_classify(ClassificationAlgorithm):
                           "other"]
         # Comment for docker build
         # Comment for docker built
-        self.model = model
+        
         self.cfg = cfg
         
+        self.device = 'cuda' if cfg.NUM_GPUS >= 1 else 'cpu'
+
+        self.model = model
+        self.transformer = VideoTransformerPerFrame(cfg).to(self.device).eval()
         
         self._data_mean = cfg.DATA.MEAN
         self._data_std = cfg.DATA.STD
@@ -366,17 +369,12 @@ class SurgVU_classify(ClassificationAlgorithm):
         cap = cv2.VideoCapture(str(fname))
         
         expected_num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        num_frames = count_valid_frames(fname)
-
-        #if num_frames == 0:
-            
+        num_frames = count_valid_frames(fname)            
 
         frame_indices = [i for i in range(num_frames)]
 
         window_size = 16
         sample_rate = 4
-
-        predictions = []
 
         frame_video_features = {}
 
@@ -406,8 +404,20 @@ class SurgVU_classify(ClassificationAlgorithm):
             mvit_output = self.model(frames, features=True)["phases"][0] #Features=True extrae los class token
             frame_video_features[frame_num] = mvit_output
 
-            
+        transformer_window_size = 16
+        transformer_sample_rate = 4
 
+        predictions = []
+
+        for frame_num in tqdm(frame_indices, desc=f'Processing video features with transformer for {fname}...'):
+            transformer_window_frame_indices = get_sequence(frame_num, (window_size * sample_rate) // 2, sample_rate, num_frames, window_size * sample_rate)
+
+            feature_window = [frame_video_features[frame].tolist() for frame in transformer_window_frame_indices]
+            feature_window = torch.tensor(feature_window).to(self.device)
+            feature_window = feature_window.unsqueeze(0)
+
+            transformer_output = self.transformer(feature_window)["phases"][0]
+            
         mapped_outputs = map_probabilities(model_output, mvit_output[0].tolist())
             
         # Append the argmax of the list
