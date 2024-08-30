@@ -15,7 +15,6 @@ from evalutils.exceptions import ValidationError
 import random
 from typing import Dict
 import json
-#from model.mvit import MViT
 
 import traceback
 import numpy as np
@@ -45,7 +44,10 @@ from model.build import build_model
 # Toggle the variable below to debug locally. The final container would need to have execute_in_docker=True
 # Fix fillna
 ####
-execute_in_docker = True
+execute_in_docker = False
+
+cv2.setUseOptimized(True)
+cv2.setNumThreads(os.cpu_count())
 
 def count_valid_frames(video_path):
     cap = cv2.VideoCapture(video_path)
@@ -87,20 +89,19 @@ def get_sequence(center_idx, half_len, sample_rate, num_frames, length):
 
     return seq
 
-def blur_frame(
-    frame: np.ndarray,
-    blurness: int = 51,
-    side_margin: int = 192,
-    bottom_margin: int = 33,
-    ):
+def blur_frame(frame: np.ndarray, blurness: int = 51, side_margin: int = 192, bottom_margin: int = 33):
+    # Apply Gaussian blur directly to the frame
+    blurred_img = cv2.GaussianBlur(frame, (blurness, blurness), 0)
 
-    img = frame.copy()
-    blurred_img = cv2.GaussianBlur(img, (blurness, blurness), 0)
-    mask = np.zeros_like(img)
-    mask[:-bottom_margin, :, :] = 1
-    img = np.where(mask, img, blurred_img)
-    
+    # Create the mask once
+    mask = np.ones_like(frame, dtype=bool)
+    mask[-bottom_margin:, :, :] = False
+
+    # Apply the mask to blend the blurred and original images
+    img = np.where(mask, frame, blurred_img)
+
     return img
+
 
 def map_probabilities(model_output: dict, probabilities: list):
     """
@@ -265,7 +266,7 @@ class SurgVU_classify(ClassificationAlgorithm):
         boxes = None
 
         # try:
-        imgs = [cv2_transform.scale(self._crop_size, img) for img in imgs]
+        #imgs = [cv2_transform.scale(self._crop_size, img) for img in imgs]
         
         imgs, boxes = cv2_transform.spatial_shift_crop_list(
             self._crop_size, imgs, 1, boxes=boxes
@@ -308,6 +309,44 @@ class SurgVU_classify(ClassificationAlgorithm):
         imgs = torch.from_numpy(imgs)
         
         return imgs
+    
+    def _process_video_frames(self, video_path: str, blurness: int = 51, side_margin: int = 192, bottom_margin: int = 33):
+
+
+        # Open the video file
+        cap = cv2.VideoCapture(video_path)
+
+        expected_num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        frames_dict = {}
+        frame_idx = 0
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break  # End of video
+
+            # Apply Gaussian blur directly to the frame
+            blurred_img = cv2.GaussianBlur(frame, (blurness, blurness), 0)
+
+            # Create the mask once
+            mask = np.ones_like(frame, dtype=bool)
+            mask[-bottom_margin:, :, :] = False
+
+            # Apply the mask to blend the blurred and original images
+            processed_frame = np.where(mask, frame, blurred_img)
+
+            # Apply additional cv2 transforms here if needed
+            # Example: processed_frame = cv2_transform(processed_frame)
+            processed_frame = cv2_transform.scale(self._crop_size, processed_frame)
+
+            # Store the processed frame in the dictionary
+            frames_dict[frame_idx] = processed_frame
+
+            frame_idx += 1
+
+        cap.release()
+        return frames_dict, expected_num_frames
 
     def _pack_pathway_output(self, frames):
         """
@@ -363,14 +402,10 @@ class SurgVU_classify(ClassificationAlgorithm):
                 {'id': 7, 'name': 'Retraction and Collision Avoidance', 'supercategory': 'phase'}]
         
         print('Video file to be loaded: ' + str(fname))
-        cap = cv2.VideoCapture(str(fname))
+        all_video_frames, expected_num_frames = self._process_video_frames(fname)
         
-        expected_num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         num_frames = count_valid_frames(fname)
-
-        #if num_frames == 0:
             
-
         frame_indices = [i for i in range(num_frames)]
 
         window_size = 16
@@ -385,15 +420,7 @@ class SurgVU_classify(ClassificationAlgorithm):
             frames = []
 
             for index in window_frame_indices:
-                # Set the current position of the video to the desired frame index
-                cap.set(cv2.CAP_PROP_POS_FRAMES, index)
-
-                # Read the frame at the specified index
-                ret, frame = cap.read()
-
-                frame = blur_frame(frame)
-
-                frames.append(frame)
+                frames.append(all_video_frames[index])
 
             frames = self._images_and_boxes_preprocessing_cv2(frames)
             frames = self._pack_pathway_output(frames)
