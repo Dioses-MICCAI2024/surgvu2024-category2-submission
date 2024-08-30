@@ -9,7 +9,9 @@ MEM_LIMIT="30g"  # Maximum is currently 30g, configurable in your algorithm imag
 
 docker volume create surgvu_cat2-output-$VOLUME_SUFFIX
 
-# Do not change any of the parameters to docker run, these are fixed
+#
+
+# # Do not change any of the parameters to docker run, these are fixed
 docker run --rm \
         --gpus all \
         --memory="${MEM_LIMIT}" \
@@ -23,16 +25,22 @@ docker run --rm \
         -v surgvu_cat2-output-$VOLUME_SUFFIX:/output/ \
         surgvu_cat2
 
-# docker run --rm \
-#         -v surgtoolloc_det-output-$VOLUME_SUFFIX:/output/ \
-#         python cat /output/results.json | python -m json.tool
-#         python:3.9-slim cat /output/results.json | python -m json.tool
+docker run --rm \
+        -v surgtoolloc_det-output-$VOLUME_SUFFIX:/output/ \
+        python cat /output/results.json | python -m json.tool \
+        python:3.8-slim cat /output/results.json | python -m json.tool
 
+# # Run a Docker container to process the JSON file
 # docker run --rm \
 #         -v surgtoolloc_det-output-$VOLUME_SUFFIX:/output/ \
-#         -v $SCRIPTPATH/test/:/input/ \
-#         -v $SCRIPTPATH/:/tmp/ \
-#         python -c "import json, sys; f1 = json.load(open('/output/surgical-step-classification.json')); f2 = json.load(open('/tmp/expected_output_detection.json')); sys.exit(f1 != f2);"
+#         python:3.8-slim \
+#         bash -c "cat /output/results.json | python -m json.tool"
+
+docker run --rm \
+        -v surgtoolloc_det-output-$VOLUME_SUFFIX:/output/ \
+        -v $SCRIPTPATH/test/:/input/ \
+        -v $SCRIPTPATH/:/tmp/ \
+        python -c "import json, sys; f1 = json.load(open('/output/surgical-step-classification.json')); f2 = json.load(open('/tmp/expected_output_detection.json')); sys.exit(f1 != f2);"
 
 if [ $? -eq 0 ]; then
     echo "Tests successfully passed..."

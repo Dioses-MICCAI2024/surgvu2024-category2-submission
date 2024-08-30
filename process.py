@@ -1,8 +1,3 @@
-import torch
-
-print(torch.cuda.is_available())
-breakpoint()
-
 import SimpleITK
 import numpy as np
 import cv2
@@ -49,7 +44,7 @@ from model.build import build_model
 # Toggle the variable below to debug locally. The final container would need to have execute_in_docker=True
 # Fix fillna
 ####
-execute_in_docker = True
+execute_in_docker = False
 
 def count_valid_frames(video_path):
     cap = cv2.VideoCapture(video_path)
@@ -227,17 +222,6 @@ class SurgVU_classify(ClassificationAlgorithm):
 
         print(self.step_list)
 
-    # def process_case(self, *, idx, case):
-
-    #     # Input video would return the collection of all frames (cap object)
-    #     input_video_file_path = case #VideoLoader.load(case)
-
-    #     # Detect and score candidates
-    #     scored_candidates = self.predict(case.path) #video file > load evalutils.py
-
-    #     # return
-    #     # Write resulting candidates to result.json for this case
-    #     return scored_candidates
 
     def process_case(self, *, idx, case):
         # Check if the file is an mp4 file
@@ -258,7 +242,7 @@ class SurgVU_classify(ClassificationAlgorithm):
     def save(self):
         print('Saving prediction results to ' + str(self._output_file))
         with open(str(self._output_file), "w") as f:
-            json.dump(self._case_results, f)
+            json.dump(self._case_results[0], f)
 
     def _images_and_boxes_preprocessing_cv2(self, imgs):
         """
@@ -435,9 +419,13 @@ def test(cfg):
             config/defaults.py
     """
 
-    # Build the video model and print model statistics.
+     # Build the video model and print model statistics.
+    if not torch.cuda.is_available():
+            cfg.NUM_GPUS = 0
+
     model = build_model(cfg)
     print(model)
+    print(f'Running on {cfg.NUM_GPUS} GPUs!')
 
     # Load checkpoint #TODO: Revisar el script de checkpoint. Asegurarnos que el cfg tiene la ruta indicada de nuestro modelo final
     cu.load_test_checkpoint(cfg, model) 
