@@ -1,20 +1,19 @@
-# Use NVIDIA's PyTorch base image with CUDA support
-FROM nvcr.io/nvidia/pytorch:22.07-py3
+# Start with an NVIDIA PyTorch container that supports CUDA 11.1
+FROM nvcr.io/nvidia/pytorch:21.06-py3
 
 ENV DEBIAN_FRONTEND=noninteractive 
 
 RUN groupadd -r algorithm && useradd -m --no-log-init -r -g algorithm algorithm
 
-# Install dependencies excluding git-based packages
-RUN python3 -m pip install --user numpy
+RUN python3 -m pip install --upgrade pip
+
+# Install the specific versions of torch and torchvision compatible with CUDA 11.1
+RUN python3 -m pip install torch==1.9.0+cu111 torchvision==0.10.0+cu111 torchaudio==0.9.0 -f https://download.pytorch.org/whl/torch_stable.html
 
 # Install GitHub-based packages in a single command
-RUN python3 -m pip install --user \
-    "cityscapesScripts @ git+https://github.com/mcordts/cityscapesScripts.git@aeb7b82531f86185ce287705be28f452ba3ddbb8" \
-    "detectron2 @ git+https://github.com/facebookresearch/detectron2.git@bb96d0b01d0605761ca182d0e3fac6ead8d8df6e" \
-    "fairscale @ git+https://github.com/facebookresearch/fairscale@a342f349598b7449e477cfedaf8fc6bc3b068227"
-
 RUN pip --no-cache-dir install 'git+https://github.com/facebookresearch/fvcore'
+RUN pip --no-cache-dir install 'git+https://github.com/facebookresearch/fairscale'
+RUN python3 -m pip install 'git+https://github.com/facebookresearch/detectron2.git'
 
 RUN mkdir -p /opt/algorithm /input /output \
     && chown algorithm:algorithm /opt/algorithm /input /output

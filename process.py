@@ -20,6 +20,7 @@ import json
 import traceback
 import numpy as np
 import torch
+
 from tqdm import tqdm
 import sys
 import os
@@ -44,7 +45,7 @@ from model.build import build_model
 # Toggle the variable below to debug locally. The final container would need to have execute_in_docker=True
 # Fix fillna
 ####
-execute_in_docker = False
+execute_in_docker = True
 
 def count_valid_frames(video_path):
     cap = cv2.VideoCapture(video_path)
@@ -241,6 +242,7 @@ class SurgVU_classify(ClassificationAlgorithm):
 
     def save(self):
         print('Saving prediction results to ' + str(self._output_file))
+        print(self._case_results[0])
         with open(str(self._output_file), "w") as f:
             json.dump(self._case_results[0], f)
 
@@ -264,8 +266,6 @@ class SurgVU_classify(ClassificationAlgorithm):
 
         # try:
         imgs = [cv2_transform.scale(self._crop_size, img) for img in imgs]
-        # except:
-            # breakpoint()
         
         imgs, boxes = cv2_transform.spatial_shift_crop_list(
             self._crop_size, imgs, 1, boxes=boxes
@@ -365,7 +365,7 @@ class SurgVU_classify(ClassificationAlgorithm):
         print('Video file to be loaded: ' + str(fname))
         cap = cv2.VideoCapture(str(fname))
         
-        # num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        expected_num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         num_frames = count_valid_frames(fname)
 
         #if num_frames == 0:
@@ -407,8 +407,15 @@ class SurgVU_classify(ClassificationAlgorithm):
             # Append the argmax of the list
             predictions.append({"frame_nr": frame_num, "surgical_step": mapped_outputs.index(max(mapped_outputs))})
         
+        if expected_num_frames > num_frames:
+            dummy_extra_prediction = predictions[-1]['surgical_step']
+            for extra_frame_num in range(num_frames, expected_num_frames):
+                predictions.append({"frame_nr": extra_frame_num, "surgical_step": dummy_extra_prediction})
+
         print('No. of frames: ', num_frames)
-        #breakpoint()
+        print('Expected No. of frames: ', expected_num_frames)
+        print('Total predictions: ', len(predictions))
+
         return predictions
 
 def test(cfg):
@@ -424,11 +431,19 @@ def test(cfg):
             cfg.NUM_GPUS = 0
 
     model = build_model(cfg)
+
+    model.eval()
+
     print(model)
     print(f'Running on {cfg.NUM_GPUS} GPUs!')
 
     # Load checkpoint #TODO: Revisar el script de checkpoint. Asegurarnos que el cfg tiene la ruta indicada de nuestro modelo final
-    cu.load_test_checkpoint(cfg, model) 
+    cu.load_test_checkpoint(cfg, model)
+
+    state_dict = model.state_dict()
+
+    # Selecting specific layers to print
+    layers_to_print = ['blocks.0.attn.qkv.weight', 'blocks.3.mlp.fc1.weight']
 
     surgvu_pipeline = SurgVU_classify(model, cfg)
 

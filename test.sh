@@ -25,10 +25,10 @@ docker run --rm \
         -v surgvu_cat2-output-$VOLUME_SUFFIX:/output/ \
         surgvu_cat2
 
-docker run --rm \
-        -v surgtoolloc_det-output-$VOLUME_SUFFIX:/output/ \
-        python cat /output/results.json | python -m json.tool \
-        python:3.8-slim cat /output/results.json | python -m json.tool
+# docker run --rm \
+#         -v surgtoolloc_det-output-$VOLUME_SUFFIX:/output/ \
+#         python cat /output/results.json | python -m json.tool \
+#         python:3.8-slim cat /output/results.json | python -m json.tool
 
 # # Run a Docker container to process the JSON file
 # docker run --rm \
