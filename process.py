@@ -45,7 +45,7 @@ from model.build import build_model
 # Toggle the variable below to debug locally. The final container would need to have execute_in_docker=True
 # Fix fillna
 ####
-execute_in_docker = True
+execute_in_docker = False
 
 def count_valid_frames(video_path):
     cap = cv2.VideoCapture(video_path)
@@ -378,7 +378,9 @@ class SurgVU_classify(ClassificationAlgorithm):
 
         predictions = []
 
-        for frame_num in tqdm(frame_indices, desc=f'Processing video {fname}...'):
+        frame_video_features = {}
+
+        for frame_num in tqdm(frame_indices, desc=f'Processing video features for {fname}...'):
             frame_idx = 0
             window_frame_indices = get_sequence(frame_num, (window_size * sample_rate) // 2, sample_rate, num_frames, window_size * sample_rate)
 
@@ -401,11 +403,16 @@ class SurgVU_classify(ClassificationAlgorithm):
             frames[0] = frames[0].unsqueeze(0) #Agregamos la dimension del batch a nuestros datos
 
             # Load checkpoint
-            mvit_output = self.model(frames)
-            mapped_outputs = map_probabilities(model_output, mvit_output["phases"][0].tolist())
+            mvit_output = self.model(frames, features=True)["phases"][0] #Features=True extrae los class token
+            frame_video_features[frame_num] = mvit_output
+
             
-            # Append the argmax of the list
-            predictions.append({"frame_nr": frame_num, "surgical_step": mapped_outputs.index(max(mapped_outputs))})
+
+        mapped_outputs = map_probabilities(model_output, mvit_output[0].tolist())
+            
+        # Append the argmax of the list
+        predictions.append({"frame_nr": frame_num, "surgical_step": mapped_outputs.index(max(mapped_outputs))})
+
         
         if expected_num_frames > num_frames:
             dummy_extra_prediction = predictions[-1]['surgical_step']

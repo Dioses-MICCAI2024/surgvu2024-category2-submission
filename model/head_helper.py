@@ -341,6 +341,9 @@ class TransformerBasicHead(nn.Module):
             x = x[:,1:].mean(1)
         else:
             x = x.mean(1)
+        breakpoint()
+        if features:
+            return x
 
         if hasattr(self, "dropout"):
             x = self.dropout(x)

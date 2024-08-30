@@ -389,7 +389,7 @@ class MViT(nn.Module):
         for blk in self.blocks:
             x, thw = blk(x, thw)
 
-        x = self.norm(x)
+        x = self.norm(x) #Features
 
         # TAPIR head classification
         for task in self.tasks:
